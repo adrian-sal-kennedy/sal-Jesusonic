@@ -1,0 +1,143 @@
+// Copyright 2006, Thomas Scott Stillwell
+// All rights reserved.
+//
+//Redistribution and use in source and binary forms, with or without modification, are permitted 
+//provided that the following conditions are met:
+//
+//Redistributions of source code must retain the above copyright notice, this list of conditions 
+//and the following disclaimer. 
+//
+//Redistributions in binary form must reproduce the above copyright notice, this list of conditions 
+//and the following disclaimer in the documentation and/or other materials provided with the distribution. 
+//
+//The name of Thomas Scott Stillwell may not be used to endorse or 
+//promote products derived from this software without specific prior written permission. 
+//
+//THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR 
+//IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND 
+//FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS 
+//BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES 
+//(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR 
+//PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, 
+//STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF 
+//THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+desc:K-Weighting filter [sal]
+desc:K-Weighting filter [sal]
+//tags: filter
+//author: Stillwell, Sal
+
+in_pin:left input
+in_pin:right input
+out_pin:left output
+out_pin:right output
+
+@init
+  // highpass
+  hpf = 0;
+  gain1 = 0;
+  freq1 = 100;
+  a1 = 1;
+  s1 = 1;
+  q1 = 1 / (sqrt((a1 + 1/a1)*(1/s1 - 1) + 2));
+  w01 = 2 * $pi * freq1/srate;
+  cosw01 = cos(w01);
+  sinw01 = sin(w01);
+  alpha1 = sinw01 / (2 * q1);
+
+  b01 = (1 + cosw01)/2;
+  b11 = -(1 + cosw01);
+  b21 = (1 + cosw01)/2;
+  a01 = 1 + alpha1;
+  a11 = -2 * cosw01;
+  a21 = 1 - alpha1;
+  b01 /= a01;
+  b11 /= a01;
+  b21 /= a01;
+  a11 /= a01;
+  a21 /= a01;
+
+  // high shelf
+  SPN=0;
+  yl_ls=x1l_ls=x2l_ls=y1l_ls=y2l_ls=yr_ls=x1r_ls=x2r_ls=y1r_ls=y2r_ls=0;
+  yl_hs=x1l_hs=x2l_hs=y1l_hs=y2l_hs=yr_hs=x1r_hs=x2r_hs=y1r_hs=y2r_hs=0;
+  
+  cf = 1000;
+  freq2 = cf;
+  cf /= srate;
+  boost = -4.5;
+  
+  hs_sa = tan($pi*(cf-0.25));
+  hs_asq = hs_sa*hs_sa;
+  A = 10^(boost/20.0);
+  (boost < 6.0) && (boost > -6.0) ? (
+    F = sqrt(A);
+  ) : (
+    (A > 1.0) ? (
+        F = A/sqrt(2.0);
+      ) : (
+        F = A*sqrt(2.0);
+      );
+  );
+  F2 = F*F;
+  tmp = A*A - F2;
+  abs(tmp) <= SPN ? (
+    gammad = 1.0;
+  ) : (
+    gammad = ((F2-1.0)/tmp)^(0.25);
+  );
+  gamman = sqrt(A)*gammad;
+  gamma2 = gamman*gamman;
+  gam2p1 = 1.0 + gamma2;
+  siggam2 = 2.0*sqrt(2.0)/2.0*gamman;
+  hs_ta0 = gam2p1 + siggam2;
+  hs_ta1 = -2.0*(1.0 - gamma2);
+  hs_ta2 = gam2p1 - siggam2;
+  gamma2 = gammad*gammad;
+  gam2p1 = 1.0 + gamma2;
+  siggam2 = 2.0*sqrt(2.0)/2.0*gammad;
+  hs_tb0 = gam2p1 + siggam2;
+  hs_tb1 = -2.0*(1.0 - gamma2);
+  hs_tb2 = gam2p1 - siggam2;
+  
+  aa1 = hs_sa*hs_ta1;
+  hs_init_a0 = hs_ta0 + aa1 + hs_asq*hs_ta2;
+  hs_init_a1 = 2.0*hs_sa*(hs_ta0+hs_ta2)+(1.0+hs_asq)*hs_ta1;
+  hs_init_a2 = hs_asq*hs_ta0 + aa1 + hs_ta2;
+  
+  hs_ab1 = hs_sa*hs_tb1;
+  hs_init_b0 = hs_tb0 + hs_ab1 + hs_asq*hs_tb2;
+  hs_b1 = 2.0*hs_sa*(hs_tb0+hs_tb2)+(1.0+hs_asq)*hs_tb1;
+  hs_b2 = hs_asq*hs_tb0 + hs_ab1 + hs_tb2;
+  
+  recipb0 = 1.0/hs_init_b0;
+  hs_init_a0 *= recipb0;
+  hs_init_a1 *= recipb0;
+  hs_init_a2 *= recipb0;
+  hs_b1 *= -recipb0;
+  hs_b2 *= -recipb0;
+    
+  hs_init_gain = 10^(boost/20.0);
+  hs_a0 = hs_init_a0/hs_init_gain;
+  hs_a1 = hs_init_a1/hs_init_gain; 
+  hs_a2 = hs_init_a2/hs_init_gain; 
+  
+@sample
+  // high pass
+  spl = (spl0+spl1)/2;
+  ospl0 = spl;
+  spl = b01 * spl + b11 * xl11 + b21 * xl21 - a11 * yl11 - a21 * yl21;
+  xl21 = xl11;
+  xl11 = ospl0;
+  yl21 = yl11;
+  yl11 = spl;
+
+  // high shelf   
+  yl_hs = hs_a0*spl + hs_a1*x1l_hs + hs_a2*x2l_hs + hs_b1*y1l_hs + hs_b2*y2l_hs;
+  x2l_hs = x1l_hs;
+  x1l_hs = spl;
+  y2l_hs = y1l_hs;
+  y1l_hs = yl_hs;
+  
+  //get rid of this when incorporating into LUFS-compressor
+  spl0=spl1=yl_hs;

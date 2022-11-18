@@ -1,0 +1,268 @@
+// (C) 2006-2007, 2021, Michael Gruhn, Sal K
+
+// NO WARRANTY IS GRANTED. THIS PLUG-IN IS PROVIDED ON AN "AS IS" BASIS, WITHOUT
+// WARRANTY OF ANY KIND. NO LIABILITY IS GRANTED, INCLUDING, BUT NOT LIMITED TO,
+// ANY DIRECT OR INDIRECT,  SPECIAL,  INCIDENTAL OR CONSEQUENTIAL DAMAGE ARISING
+// OUT OF  THE  USE  OR INABILITY  TO  USE  THIS PLUG-IN,  COMPUTER FAILTURE  OF
+// MALFUNCTION INCLUDED.  THE USE OF THE SOURCE CODE,  EITHER  PARTIALLY  OR  IN
+// TOTAL, IS ONLY GRANTED,  IF USED IN THE SENSE OF THE AUTHOR'S INTENTION,  AND
+// USED WITH ACKNOWLEDGEMENT OF THE AUTHOR. FURTHERMORE IS THIS PLUG-IN A  THIRD
+// PARTY CONTRIBUTION,  EVEN IF INCLUDED IN REAPER(TM),  COCKOS INCORPORATED  OR
+// ITS AFFILIATES HAVE NOTHING TO DO WITH IT.  LAST BUT NOT LEAST, BY USING THIS
+// PLUG-IN YOU RELINQUISH YOUR CLAIM TO SUE IT'S AUTHOR, AS WELL AS THE CLAIM TO
+// ENTRUST SOMEBODY ELSE WITH DOING SO.
+
+desc:LUFS Compressor [Sal]
+desc:LUFS Compressor [Sal]
+//tags: dynamics compressor limiter LUFS
+//author: Sal
+
+slider1:-21<-30,-.1,.1>Threshold (dB)
+slider2:100<1,100,.1>Ratio
+slider3:1000<0,30000,1>Attack (ms)
+slider4:60000<0,120000,1>Release (ms)
+slider5:200<0,2000,1>RMS Size (ms)
+slider6:0<0,1,1{No,Yes}>Auto Make-Up
+slider7:0<-12,12,.1>Output (dB)
+slider8:0<0,1,1{Compress,Limit}>Character
+slider9:0<0,1,1{Normal,Sidechain}>Detector Input
+slider10:1<0,1,1{RMS,K-Weighted}>Metering
+slider11:8<0,20,1>RMS Relative Gating
+slider12:10000<0,120000,1>Gate Hold Time (ms)
+
+in_pin:left input
+in_pin:right input
+in_pin:sidechain left input
+in_pin:sidechain right input
+out_pin:left output
+out_pin:right output
+
+@init
+// AGC
+gain = seekgain = 1;
+logBaseConv = 8.65617024533378;
+dc = 10^-30;
+t = 0;
+b = -exp(-60 / srate );
+a = 1.0 + b;
+
+gr_meter=1;
+gr_meter_decay = exp(1/(1*srate));
+
+sidechain = 0;
+holdTime = 5*srate;
+longTermRmsDb = -21;
+longTermRms = exp(longTermRmsDb/logBaseConv);
+rmsGateDb = 8;
+rmsGate = exp(rmsGateDb/logBaseConv);
+holdCounter = 0; // when this hits release time, we stop our hacky "gating" operation
+
+// K-weighting
+
+  // highpass
+  hpf = 0;
+  gain1 = 0;
+  freq1 = 100;
+  a1 = 1;
+  s1 = 1;
+  q1 = 1 / (sqrt((a1 + 1/a1)*(1/s1 - 1) + 2));
+  w01 = 2 * $pi * freq1/srate;
+  cosw01 = cos(w01);
+  sinw01 = sin(w01);
+  alpha1 = sinw01 / (2 * q1);
+
+  b01 = (1 + cosw01)/2;
+  b11 = -(1 + cosw01);
+  b21 = (1 + cosw01)/2;
+  a01 = 1 + alpha1;
+  a11 = -2 * cosw01;
+  a21 = 1 - alpha1;
+  b01 /= a01;
+  b11 /= a01;
+  b21 /= a01;
+  a11 /= a01;
+  a21 /= a01;
+
+  // high shelf
+  SPN=0;
+  yl_ls=x1l_ls=x2l_ls=y1l_ls=y2l_ls=yr_ls=x1r_ls=x2r_ls=y1r_ls=y2r_ls=0;
+  yl_hs=x1l_hs=x2l_hs=y1l_hs=y2l_hs=yr_hs=x1r_hs=x2r_hs=y1r_hs=y2r_hs=0;
+  
+  cf = 3000;
+  freq2 = cf;
+  cf /= srate;
+  boost = -3;
+  
+  hs_sa = tan($pi*(cf-0.25));
+  hs_asq = hs_sa*hs_sa;
+  Ahs = exp(boost/logBaseConv);
+  (boost < 6.0) && (boost > -6.0) ? (
+    F = sqrt(Ahs);
+  ) : (
+    (Ahs > 1.0) ? (
+        F = Ahs/sqrt(2.0);
+      ) : (
+        F = Ahs*sqrt(2.0);
+      );
+  );
+  F2 = F*F;
+  tmp = Ahs*Ahs - F2;
+  abs(tmp) <= SPN ? (
+    gammad = 1.0;
+  ) : (
+    gammad = ((F2-1.0)/tmp)^(0.25);
+  );
+  gamman = sqrt(Ahs)*gammad;
+  gamma2 = gamman*gamman;
+  gam2p1 = 1.0 + gamma2;
+  siggam2 = 2.0*sqrt(2.0)/2.0*gamman;
+  hs_ta0 = gam2p1 + siggam2;
+  hs_ta1 = -2.0*(1.0 - gamma2);
+  hs_ta2 = gam2p1 - siggam2;
+  gamma2 = gammad*gammad;
+  gam2p1 = 1.0 + gamma2;
+  siggam2 = 2.0*sqrt(2.0)/2.0*gammad;
+  hs_tb0 = gam2p1 + siggam2;
+  hs_tb1 = -2.0*(1.0 - gamma2);
+  hs_tb2 = gam2p1 - siggam2;
+  
+  aa1 = hs_sa*hs_ta1;
+  hs_init_a0 = hs_ta0 + aa1 + hs_asq*hs_ta2;
+  hs_init_a1 = 2.0*hs_sa*(hs_ta0+hs_ta2)+(1.0+hs_asq)*hs_ta1;
+  hs_init_a2 = hs_asq*hs_ta0 + aa1 + hs_ta2;
+  
+  hs_ab1 = hs_sa*hs_tb1;
+  hs_init_b0 = hs_tb0 + hs_ab1 + hs_asq*hs_tb2;
+  hs_b1 = 2.0*hs_sa*(hs_tb0+hs_tb2)+(1.0+hs_asq)*hs_tb1;
+  hs_b2 = hs_asq*hs_tb0 + hs_ab1 + hs_tb2;
+  
+  recipb0 = 1.0/hs_init_b0;
+  hs_init_a0 *= recipb0;
+  hs_init_a1 *= recipb0;
+  hs_init_a2 *= recipb0;
+  hs_b1 *= -recipb0;
+  hs_b2 *= -recipb0;
+    
+  hs_init_gain = exp(boost/logBaseConv);
+  hs_a0 = hs_init_a0/hs_init_gain;
+  hs_a1 = hs_init_a1/hs_init_gain; 
+  hs_a2 = hs_init_a2/hs_init_gain; 
+
+@slider
+threshDB = slider1;
+thresh = exp(threshDB/logBaseConv);
+ratio = 1/slider2;
+
+attack = exp( threshDB / (slider3*srate/1000) / logBaseConv);
+holdTime = (slider12*srate/1000);
+release = exp( threshdB / (slider4*srate/1000) / logBaseConv );
+rmsSize = floor(slider5/1000*srate);
+
+rms_size = floor(slider5/1000*srate);
+rmsSqrSum = rmsPos = 0;
+memset(0,0,rmsSize);
+
+volume = exp(slider7/logBaseConv) / (slider6 ? exp(( threshDB -threshDB*ratio )/logBaseConv)  : 1 );
+
+seekgain = 1;
+
+sidechain = slider9;
+kWeight = slider10;
+rmsGateDb = slider11;
+rmsGate = exp(rmsGateDb/logBaseConv);
+rmsGatePerSample = (1000*rmsGate)/(200*srate); // ebu-r128 works in 200ms chunks
+rmsLowThresh = exp((threshDB - rmsGateDb)/logBaseConv); // low threshold for ignoring gain reduction so long silences don't eventually kill us.
+//rmsLowThresh = thresh;
+holdCounter = holdTime;
+
+@sample
+sidechain ? (
+    rmsS = rms = (spl2+spl3)/2;
+) : (
+    rmsS = rms = (spl0+spl1)/2;
+);
+kWeight ? (
+  // high pass
+  spl = rmsS;
+  ospl0 = spl;
+  spl = b01 * spl + b11 * xl11 + b21 * xl21 - a11 * yl11 - a21 * yl21;
+  xl21 = xl11;
+  xl11 = ospl0;
+  yl21 = yl11;
+  yl11 = spl;
+
+  // high shelf   
+  yl_hs = hs_a0*spl + hs_a1*x1l_hs + hs_a2*x2l_hs + hs_b1*y1l_hs + hs_b2*y2l_hs;
+  x2l_hs = x1l_hs;
+  x1l_hs = spl;
+  y2l_hs = y1l_hs;
+  y1l_hs = yl_hs;
+  spl = yl_hs;
+  
+  rmsS = rms = spl;
+);
+rms = rms*rms;
+rms = sqrt( (t = a*rms-b*t) );
+delta = max(longTermRms - rms,0);
+(rmsS < rmsLowThresh) ||
+((delta > rmsGatePerSample) && (holdCounter < holdTime)) ? (
+    rms = longTermRms;
+    holdCounter = holdCounter + 1;
+):(
+    holdCounter = 0;
+    longTermRms = rms;
+);
+slider8 ? rms = max(rms,rmsS);
+
+
+rmsSize > 1 ? (
+  rmsSqrSum = max(rmsSqrSum - rmsPos[0],0) + (rmsPos[0] = sqr(rms));
+  (rmsPos+=1) >= rmsSize ? rmsPos=0;
+  rms = sqrt(rmsSqrSum/rmsSize);
+);
+
+seekGain = ((rms > thresh) ? exp((threshDB + (log(rms)*logBaseConv-threshDB)*ratio) /logBaseConv) / rms : 1);
+gain = ((gain > seekGain) ? max( gain*attack , seekGain ) : min( gain/release , seekGain ));
+spl0 *= gain * volume;
+spl1 *= gain * volume;
+
+gain < gr_meter ? gr_meter=gain : ( gr_meter*=gr_meter_decay; gr_meter>1?gr_meter=1; );
+
+@gfx 0 32 // request horizontal/vertical heights (0 means dont care)
+
+  gr_meter *= exp(1/30); gr_meter>1?gr_meter=1; // decay meter here so if the audio processing stops it doesnt "stick"
+  gfx_r=1; gfx_g=gfx_b=0; gfx_a=0.8;
+  
+  meter_bot=20;
+  meter_h=min(gfx_h,32);
+  xscale=gfx_w*20/meter_bot;
+
+  gfx_y=0;
+  gfx_x=gfx_w + log10(gr_meter)*xscale;
+  gfx_rectto(gfx_w,meter_h);
+
+  gfx_r=gfx_g=gfx_b=1.0; gfx_a=0.6;
+
+  s2=sqrt(2)/2;
+  g = s2;
+  while(
+    gfx_x=gfx_w + log10(g)*xscale;
+    gfx_x >= 0 ? 
+    (
+      gfx_y=0;
+      gfx_lineto(gfx_x,meter_h,0);
+      gfx_y=meter_h-gfx_texth;
+      gfx_x+=2;
+      gfx_drawnumber(log10(g)*20,0);
+      gfx_drawchar($'d');
+      gfx_drawchar($'B');
+    );
+    g*=s2;
+    gfx_x >=0;
+  );
+  gfx_a=1;
+
+  gfx_x=0; gfx_y=meter_h/2 - gfx_texth/2;
+  gfx_drawnumber(log10(gr_meter)*20,1);
+  gfx_drawchar($'d');
+  gfx_drawchar($'B');
