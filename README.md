@@ -1,0 +1,4 @@
+# sal-Jesusonic
+Just a bit of fiddling with JS plugins for Reaper. I like to stream all my system audio into Reaper via Jack, and also get sick of everything on the Internet being completely random loudness.
+
+I frankenstein copypasted 3 plugins together and turned it into a long acting gated compressor that by default turns everything down to -21LUFS. By "gated" I mean it applies gating as per EBU r128 - anything 8dB (or LU) quieter than the target level is ignored, so gaps between tracks, long silences, etc will not result in the gain creeping back up, but a quieter passage will cause the AGC to release slowly until it's either -21LUFS or quieter. Currently anything too quiet will just not be touched - you can always lower the default threshold and increase default gain if you want to catch really quiet stuff, but the vast VAST majority of audio out there is much louder than -21.
